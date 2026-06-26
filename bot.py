@@ -3,39 +3,32 @@ import time
 import threading
 import requests
 from datetime import datetime
+from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.service import Service
-import undetected_chromedriver as uc
-import telebot
+from webdriver_manager.chrome import ChromeDriverManager
 
-# ---------- КЛЮЧИ (ЗАМЕНИТЕ НА СВОИ) ----------
-ODDS_API_KEY = "c5d200484e03743c549d12363e0a39fa0e539608253f42bc307f081f1f178c84"          # замените
-TELEGRAM_TOKEN = "8835537497:AAEhi_RNjHm4WM6sNiZhHnbULOfIoc3k2P8"  # замените
-CHAT_ID = "354290076"               # замените
+# ---------- КЛЮЧ ODDS-API (замените) ----------
+ODDS_API_KEY = "c5d200484e03743c549d12363e0a39fa0e539608253f42bc307f081f1f178c84"   # вставьте сюда
 
 # ---------- НАСТРОЙКИ ----------
 SPORT = "soccer"
 FILTER_DELAY = 4.0
 LIGA_STAVOK_LIVE_URL = "https://www.ligastavok.ru/Live"
 
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+# ---------- ЛОГИРОВАНИЕ В КОНСОЛЬ ----------
+def log(text):
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {text}")
 
-def send_telegram(text):
-    try:
-        bot.send_message(CHAT_ID, text)
-    except Exception as e:
-        print(f"Ошибка отправки в Telegram: {e}")
-
-# ---------- ВСЕ ОСТАЛЬНЫЕ ФУНКЦИИ (без изменений) ----------
+# ---------- 1. William Hill (Odds-API) ----------
 def get_wh_matches():
     url = f"https://api.odds-api.io/v1/odds/{SPORT}?apiKey={ODDS_API_KEY}&regions=eu&markets=totals"
     try:
         resp = requests.get(url, timeout=30)
         if resp.status_code != 200:
-            print(f"WH API ошибка: {resp.status_code}")
+            log(f"WH API ошибка: {resp.status_code}")
             return []
         data = resp.json()
         matches = []
@@ -53,15 +46,16 @@ def get_wh_matches():
                                         'over_odds': float(outcome['price'])
                                     })
                                     break
-        print(f"WH: найдено матчей: {len(matches)}")
+        log(f"WH: найдено матчей: {len(matches)}")
         return matches
     except Exception as e:
-        print(f"WH API ошибка: {e}")
+        log(f"WH API ошибка: {e}")
         return []
 
+# ---------- 2. Лига Ставок (список live-матчей) ----------
 def get_ls_matches():
-    options = uc.ChromeOptions()
-    options.headless = True
+    options = webdriver.ChromeOptions()
+    options.add_argument('--headless')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-blink-features=AutomationControlled')
@@ -70,7 +64,7 @@ def get_ls_matches():
     
     driver = None
     try:
-        driver = uc.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         driver.get(LIGA_STAVOK_LIVE_URL)
         time.sleep(5)
@@ -94,15 +88,16 @@ def get_ls_matches():
                                 "away": away,
                                 "url": url
                             })
-        print(f"ЛС: найдено матчей: {len(matches)}")
+        log(f"ЛС: найдено матчей: {len(matches)}")
         return matches
     except Exception as e:
-        print(f"ЛС ошибка: {e}")
+        log(f"ЛС ошибка: {e}")
         return []
     finally:
         if driver:
             driver.quit()
 
+# ---------- 3. Сопоставление матчей ----------
 def match_found(wh_match, ls_matches):
     wh_home = wh_match['home'].lower().strip()
     wh_away = wh_match['away'].lower().strip()
@@ -115,9 +110,10 @@ def match_found(wh_match, ls_matches):
             return ls['url']
     return None
 
+# ---------- 4. Коэффициент с Лиги Ставок (страница матча) ----------
 def get_ls_odds(match_url):
-    options = uc.ChromeOptions()
-    options.headless = True
+    options = webdriver.ChromeOptions()
+    options.add_argument('--headless')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-blink-features=AutomationControlled')
@@ -126,7 +122,7 @@ def get_ls_odds(match_url):
     
     driver = None
     try:
-        driver = uc.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         driver.get(match_url)
         time.sleep(3)
@@ -152,12 +148,13 @@ def get_ls_odds(match_url):
                 continue
         return None
     except Exception as e:
-        print(f"Ошибка получения коэф. ЛС: {e}")
+        log(f"Ошибка получения коэф. ЛС: {e}")
         return None
     finally:
         if driver:
             driver.quit()
 
+# ---------- 5. Мониторинг одного матча ----------
 def monitor_match(wh_match, ls_url):
     match_id = wh_match['id']
     home = wh_match['home']
@@ -165,7 +162,7 @@ def monitor_match(wh_match, ls_url):
     wh_old = wh_match['over_odds']
     goal_time = None
     
-    print(f"Начинаем мониторинг: {home} - {away}")
+    log(f"Начинаем мониторинг: {home} - {away}")
     while True:
         try:
             wh_new = None
@@ -179,9 +176,7 @@ def monitor_match(wh_match, ls_url):
             
             if goal_time is None and wh_new < wh_old * 0.7:
                 goal_time = datetime.now()
-                msg = f"⚽ ГОЛ в {home} - {away} в {goal_time.strftime('%H:%M:%S')}"
-                print(msg)
-                send_telegram(msg)
+                log(f"⚽ ГОЛ в {home} - {away} в {goal_time.strftime('%H:%M:%S')}")
             
             if goal_time is not None:
                 ls_odds = get_ls_odds(ls_url)
@@ -189,34 +184,32 @@ def monitor_match(wh_match, ls_url):
                     close_time = datetime.now()
                     delay = (close_time - goal_time).total_seconds()
                     if delay >= FILTER_DELAY:
-                        msg = f"🔒 Задержка {delay:.1f} сек\n{home} - {away}"
-                        print(msg)
-                        send_telegram(msg)
+                        log(f"🔒 Задержка {delay:.1f} сек - {home} - {away}")
                     else:
-                        print(f"Задержка {delay:.1f} сек — пропускаем (< {FILTER_DELAY} сек)")
+                        log(f"Задержка {delay:.1f} сек — пропускаем (< {FILTER_DELAY} сек)")
                     break
             
             wh_old = wh_new
             time.sleep(2)
         except Exception as e:
-            print(f"Ошибка в monitor_match: {e}")
+            log(f"Ошибка в monitor_match: {e}")
             time.sleep(5)
 
+# ---------- 6. Главный цикл ----------
 def main():
-    send_telegram("🚀 Бот запущен. Ищем матчи...")
-    print("🚀 Бот запущен")
+    log("🚀 Бот запущен. Ищем матчи...")
     
     while True:
         try:
             wh_matches = get_wh_matches()
             if not wh_matches:
-                print("Нет матчей на WH, ждём...")
+                log("Нет матчей на WH, ждём...")
                 time.sleep(30)
                 continue
             
             ls_matches = get_ls_matches()
             if not ls_matches:
-                print("Нет матчей на ЛС, ждём...")
+                log("Нет матчей на ЛС, ждём...")
                 time.sleep(30)
                 continue
             
@@ -225,17 +218,17 @@ def main():
                 ls_url = match_found(wh, ls_matches)
                 if ls_url:
                     matched += 1
-                    print(f"✅ Совпадение: {wh['home']} - {wh['away']}")
+                    log(f"✅ Совпадение: {wh['home']} - {wh['away']}")
                     t = threading.Thread(target=monitor_match, args=(wh, ls_url))
                     t.daemon = True
                     t.start()
             
             if matched == 0:
-                print("❌ Совпадений не найдено. Возможно, разные названия команд.")
+                log("❌ Совпадений не найдено. Возможно, разные названия команд.")
             
             time.sleep(300)  # 5 минут
         except Exception as e:
-            print(f"Ошибка в main: {e}")
+            log(f"Ошибка в main: {e}")
             time.sleep(30)
 
 if __name__ == "__main__":
