@@ -1,4 +1,25 @@
 import os
+import sys
+import subprocess
+
+# ---------- УСТАНОВКА ЗАВИСИМОСТЕЙ (если не установлены) ----------
+def install_requirements():
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
+        print("✅ Зависимости успешно установлены")
+    except Exception as e:
+        print(f"⚠️ Ошибка установки зависимостей: {e}")
+
+# Проверяем, установлен ли telebot (как индикатор)
+try:
+    import telebot
+except ImportError:
+    print("📦 Устанавливаем зависимости...")
+    install_requirements()
+    # После установки пробуем импортировать снова
+    import telebot
+
+# ---------- ОСНОВНЫЕ ИМПОРТЫ ----------
 import time
 import threading
 import requests
@@ -9,15 +30,14 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.service import Service
 import undetected_chromedriver as uc
-import telebot
 
-# ============ ВСТАВЬТЕ СВОИ КЛЮЧИ ============
-ODDS_API_KEY = "c5d200484e03743c549d12363e0a39fa0e539608253f42bc307f081f1f178c84"         
-TELEGRAM_TOKEN = "8835537497:AAEhi_RNjHm4WM6sNiZhHnbULOfIoc3k2P8"  
-CHAT_ID = "354290076"              
-# ============================================
+# ---------- КЛЮЧИ (ЗАМЕНИТЕ НА СВОИ) ----------
+ODDS_API_KEY = "c5d200484e03743c549d12363e0a39fa0e539608253f42bc307f081f1f178c84"          # замените
+TELEGRAM_TOKEN = "8835537497:AAEhi_RNjHm4WM6sNiZhHnbULOfIoc3k2P8"  # замените
+CHAT_ID = "354290076"               # замените
 
-SPORT = "soccer"  # все футбольные лиги
+# ---------- НАСТРОЙКИ ----------
+SPORT = "soccer"
 FILTER_DELAY = 4.0
 LIGA_STAVOK_LIVE_URL = "https://www.ligastavok.ru/Live"
 
@@ -29,7 +49,7 @@ def send_telegram(text):
     except Exception as e:
         print(f"Ошибка отправки в Telegram: {e}")
 
-# ----- 1. William Hill (Odds-API) -----
+# ---------- ФУНКЦИИ (код тот же) ----------
 def get_wh_matches():
     url = f"https://api.odds-api.io/v1/odds/{SPORT}?apiKey={ODDS_API_KEY}&regions=eu&markets=totals"
     try:
@@ -59,7 +79,6 @@ def get_wh_matches():
         print(f"WH API ошибка: {e}")
         return []
 
-# ----- 2. Лига Ставок (парсинг списка live-матчей) -----
 def get_ls_matches():
     options = uc.ChromeOptions()
     options.headless = True
@@ -76,7 +95,6 @@ def get_ls_matches():
         driver.get(LIGA_STAVOK_LIVE_URL)
         time.sleep(5)
         
-        # Если этот селектор не работает, замените на правильный XPath (см. инструкцию)
         links = driver.find_elements(By.XPATH, "//a[contains(@href, '/event/')]")
         matches = []
         for link in links:
@@ -88,7 +106,6 @@ def get_ls_matches():
                     if len(parts) == 2:
                         home = parts[0].strip()
                         away = parts[1].strip()
-                        # удаляем лишние символы
                         home = ' '.join(home.split()).strip()
                         away = ' '.join(away.split()).strip()
                         if home and away and len(home) > 1 and len(away) > 1:
@@ -106,7 +123,6 @@ def get_ls_matches():
         if driver:
             driver.quit()
 
-# ----- 3. Сопоставление матчей -----
 def match_found(wh_match, ls_matches):
     wh_home = wh_match['home'].lower().strip()
     wh_away = wh_match['away'].lower().strip()
@@ -119,7 +135,6 @@ def match_found(wh_match, ls_matches):
             return ls['url']
     return None
 
-# ----- 4. Получение коэффициента с Лиги Ставок (страница матча) -----
 def get_ls_odds(match_url):
     options = uc.ChromeOptions()
     options.headless = True
@@ -136,7 +151,6 @@ def get_ls_odds(match_url):
         driver.get(match_url)
         time.sleep(3)
         
-        # Несколько возможных селекторов (если не работают, подберите свой)
         selectors = [
             "//span[contains(@class, 'total-over')]",
             "//div[contains(@class, 'total-over')]//span[contains(@class, 'price')]",
@@ -164,7 +178,6 @@ def get_ls_odds(match_url):
         if driver:
             driver.quit()
 
-# ----- 5. Мониторинг одного матча -----
 def monitor_match(wh_match, ls_url):
     match_id = wh_match['id']
     home = wh_match['home']
@@ -209,7 +222,6 @@ def monitor_match(wh_match, ls_url):
             print(f"Ошибка в monitor_match: {e}")
             time.sleep(5)
 
-# ----- 6. Главный цикл -----
 def main():
     send_telegram("🚀 Бот запущен. Ищем матчи...")
     print("🚀 Бот запущен")
