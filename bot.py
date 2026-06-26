@@ -2,24 +2,17 @@ import os
 import sys
 import subprocess
 
-# ---------- УСТАНОВКА ЗАВИСИМОСТЕЙ (если не установлены) ----------
-def install_requirements():
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
-        print("✅ Зависимости успешно установлены")
-    except Exception as e:
-        print(f"⚠️ Ошибка установки зависимостей: {e}")
-
-# Проверяем, установлен ли telebot (как индикатор)
+# ---------- ПРОВЕРКА И УСТАНОВКА ЗАВИСИМОСТЕЙ ----------
 try:
     import telebot
 except ImportError:
     print("📦 Устанавливаем зависимости...")
-    install_requirements()
-    # После установки пробуем импортировать снова
-    import telebot
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
+    print("✅ Зависимости установлены. Перезапускаем бота...")
+    # Перезапускаем текущий скрипт
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 
-# ---------- ОСНОВНЫЕ ИМПОРТЫ ----------
+# ---------- ОСНОВНЫЕ ИМПОРТЫ (после успешной установки) ----------
 import time
 import threading
 import requests
@@ -30,6 +23,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.service import Service
 import undetected_chromedriver as uc
+import telebot
 
 # ---------- КЛЮЧИ (ЗАМЕНИТЕ НА СВОИ) ----------
 ODDS_API_KEY = "c5d200484e03743c549d12363e0a39fa0e539608253f42bc307f081f1f178c84"          # замените
@@ -49,7 +43,7 @@ def send_telegram(text):
     except Exception as e:
         print(f"Ошибка отправки в Telegram: {e}")
 
-# ---------- ФУНКЦИИ (код тот же) ----------
+# ---------- ВСЕ ОСТАЛЬНЫЕ ФУНКЦИИ (без изменений) ----------
 def get_wh_matches():
     url = f"https://api.odds-api.io/v1/odds/{SPORT}?apiKey={ODDS_API_KEY}&regions=eu&markets=totals"
     try:
