@@ -1,1 +1,1 @@
-worker: pip install -r requirements.txt && python bot.py
+worker: python -c "import time; print('Бот работает'); time.sleep(3600)"
