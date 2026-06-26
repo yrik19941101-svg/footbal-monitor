@@ -1,18 +1,4 @@
 import os
-import sys
-import subprocess
-
-# ---------- ПРОВЕРКА И УСТАНОВКА ЗАВИСИМОСТЕЙ ----------
-try:
-    import telebot
-except ImportError:
-    print("📦 Устанавливаем зависимости...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
-    print("✅ Зависимости установлены. Перезапускаем бота...")
-    # Перезапускаем текущий скрипт
-    os.execv(sys.executable, [sys.executable] + sys.argv)
-
-# ---------- ОСНОВНЫЕ ИМПОРТЫ (после успешной установки) ----------
 import time
 import threading
 import requests
