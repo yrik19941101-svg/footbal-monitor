@@ -1,4 +1,7 @@
-import os, time, threading, requests
+import os
+import time
+import threading
+import requests
 from datetime import datetime
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -8,86 +11,275 @@ from selenium.webdriver.chrome.service import Service
 import undetected_chromedriver as uc
 import telebot
 
+# ============ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ============
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
-SPORT = "soccer_epl"
+SPORT = "soccer"  # все футбольные лиги
+
+# ============ НАСТРОЙКИ ============
+FILTER_DELAY = 4.0  # минимальная задержка в секундах для отправки уведомления
+LIGA_STAVOK_LIVE_URL = "https://www.ligastavok.ru/Live"  # страница live-матчей
+
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 def send_telegram(text):
-    try: bot.send_message(CHAT_ID, text)
-    except: pass
+    try:
+        bot.send_message(CHAT_ID, text)
+    except Exception as e:
+        print(f"Ошибка отправки в Telegram: {e}")
 
-def get_live_matches():
+# ============ 1. ПОЛУЧЕНИЕ МАТЧЕЙ С WILLIAM HILL (через Odds-API) ============
+def get_wh_matches():
     url = f"https://api.odds-api.io/v1/odds/{SPORT}?apiKey={ODDS_API_KEY}&regions=eu&markets=totals"
-    resp = requests.get(url)
-    if resp.status_code != 200: return []
-    data = resp.json()
-    matches = []
-    for event in data:
-        for bookmaker in event.get('bookmakers', []):
-            if bookmaker['key'] == 'williamhill':
-                for market in bookmaker.get('markets', []):
-                    if market['key'] == 'totals':
-                        for outcome in market.get('outcomes', []):
-                            if outcome['description'] == 'Over 2.5':
-                                matches.append({'id': event['id'], 'home': event['home_team'], 'away': event['away_team'], 'over_odds': float(outcome['price'])})
-                                break
-    return matches
+    try:
+        resp = requests.get(url, timeout=30)
+        if resp.status_code != 200:
+            print(f"WH API ошибка: {resp.status_code}")
+            return []
+        data = resp.json()
+        matches = []
+        for event in data:
+            for bookmaker in event.get('bookmakers', []):
+                if bookmaker['key'] == 'williamhill':
+                    for market in bookmaker.get('markets', []):
+                        if market['key'] == 'totals':
+                            for outcome in market.get('outcomes', []):
+                                if outcome['description'] == 'Over 2.5':
+                                    matches.append({
+                                        'id': event['id'],
+                                        'home': event['home_team'],
+                                        'away': event['away_team'],
+                                        'over_odds': float(outcome['price'])
+                                    })
+                                    break
+        print(f"WH: найдено матчей: {len(matches)}")
+        return matches
+    except Exception as e:
+        print(f"WH API ошибка: {e}")
+        return []
 
+# ============ 2. ПОЛУЧЕНИЕ МАТЧЕЙ С ЛИГИ СТАВОК (парсинг live-страницы) ============
+def get_ls_matches():
+    options = uc.ChromeOptions()
+    options.headless = True
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+    
+    driver = None
+    try:
+        driver = uc.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        driver.get(LIGA_STAVOK_LIVE_URL)
+        time.sleep(5)  # ждём загрузки
+        
+        # Ищем все ссылки на матчи
+        # ПРОБЛЕМА: селектор может отличаться! Если не работает - замените на правильный XPath
+        links = driver.find_elements(By.XPATH, "//a[contains(@href, '/event/')]")
+        
+        matches = []
+        for link in links:
+            url = link.get_attribute("href")
+            if url and "/event/" in url:
+                text = link.text.strip()
+                if " - " in text:
+                    parts = text.split(" - ")
+                    if len(parts) == 2:
+                        home = parts[0].strip()
+                        away = parts[1].strip()
+                        # Очищаем от лишних символов (счёт, время и т.д.)
+                        home = ' '.join(home.split()).strip()
+                        away = ' '.join(away.split()).strip()
+                        if home and away and len(home) > 1 and len(away) > 1:
+                            matches.append({
+                                "home": home,
+                                "away": away,
+                                "url": url
+                            })
+        
+        print(f"ЛС: найдено матчей: {len(matches)}")
+        return matches
+    except Exception as e:
+        print(f"ЛС ошибка: {e}")
+        return []
+    finally:
+        if driver:
+            driver.quit()
+
+# ============ 3. СОПОСТАВЛЕНИЕ МАТЧЕЙ ============
+def match_found(wh_match, ls_matches):
+    wh_home = wh_match['home'].lower().strip()
+    wh_away = wh_match['away'].lower().strip()
+    
+    for ls in ls_matches:
+        ls_home = ls['home'].lower().strip()
+        ls_away = ls['away'].lower().strip()
+        
+        # Проверяем точное совпадение
+        if ls_home == wh_home and ls_away == wh_away:
+            return ls['url']
+        
+        # Проверяем частичное совпадение (если названия немного отличаются)
+        if (wh_home in ls_home or ls_home in wh_home) and (wh_away in ls_away or ls_away in wh_away):
+            return ls['url']
+    
+    return None
+
+# ============ 4. ПОЛУЧЕНИЕ КОЭФФИЦИЕНТА С ЛИГИ СТАВОК ============
 def get_ls_odds(match_url):
     options = uc.ChromeOptions()
     options.headless = True
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
-    driver = uc.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+    
+    driver = None
     try:
+        driver = uc.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
         driver.get(match_url)
-        element = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//span[contains(@class, 'total-over')]")))
-        text = element.text.replace(',', '.')
-        if 'закрыт' in text.lower() or text.strip() == '': return None
-        return float(text)
-    except: return None
-    finally: driver.quit()
+        time.sleep(3)
+        
+        # Пытаемся найти коэффициент "Тотал больше 2.5"
+        # ПРОБЛЕМА: селектор может отличаться! Подберите правильный XPath
+        selectors = [
+            "//span[contains(@class, 'total-over')]",
+            "//div[contains(@class, 'total-over')]//span[contains(@class, 'price')]",
+            "//button[contains(@class, 'total-over')]//span[contains(@class, 'coef')]",
+            "//span[contains(text(), 'Более 2.5')]/following-sibling::span"
+        ]
+        
+        for selector in selectors:
+            try:
+                element = WebDriverWait(driver, 5).until(
+                    EC.presence_of_element_located((By.XPATH, selector))
+                )
+                text = element.text.replace(',', '.').strip()
+                if text and text != '-' and not text.lower().startswith(('закрыт', 'закрыто')):
+                    try:
+                        return float(text)
+                    except:
+                        continue
+            except:
+                continue
+        
+        # Если не нашли коэффициент, проверяем, закрыт ли рынок
+        page_text = driver.page_source.lower()
+        if 'закрыт' in page_text or 'закрыто' in page_text:
+            return None
+        
+        return None
+    except Exception as e:
+        print(f"Ошибка получения коэф. ЛС: {e}")
+        return None
+    finally:
+        if driver:
+            driver.quit()
 
-def monitor_match(match):
-    match_id, home, away = match['id'], match['home'], match['away']
-    ls_url = "https://www.ligastavok.ru/sport/football/..."  # замените позже
-    wh_old = match['over_odds']
+# ============ 5. МОНИТОРИНГ ОДНОГО МАТЧА ============
+def monitor_match(wh_match, ls_url):
+    match_id = wh_match['id']
+    home = wh_match['home']
+    away = wh_match['away']
+    wh_old = wh_match['over_odds']
     goal_time = None
+    sent_goal_notification = False
+    
+    print(f"Начинаем мониторинг: {home} - {away}")
+    
     while True:
-        wh_new = None
-        for m in get_live_matches():
-            if m['id'] == match_id:
-                wh_new = m['over_odds']
-                break
-        if wh_new is None:
+        try:
+            # Обновляем коэффициент WH
+            wh_new = None
+            for m in get_wh_matches():
+                if m['id'] == match_id:
+                    wh_new = m['over_odds']
+                    break
+            
+            if wh_new is None:
+                time.sleep(2)
+                continue
+            
+            # Проверяем гол (падение на 30% и более)
+            if goal_time is None and wh_new < wh_old * 0.7:
+                goal_time = datetime.now()
+                sent_goal_notification = True
+                msg = f"⚽ ГОЛ в {home} - {away} в {goal_time.strftime('%H:%M:%S')}"
+                print(msg)
+                send_telegram(msg)
+            
+            # Если гол был, проверяем закрытие на ЛС
+            if goal_time is not None:
+                ls_odds = get_ls_odds(ls_url)
+                
+                if ls_odds is None:  # рынок закрыт
+                    close_time = datetime.now()
+                    delay = (close_time - goal_time).total_seconds()
+                    
+                    if delay >= FILTER_DELAY:
+                        msg = f"🔒 Задержка {delay:.1f} сек\n{home} - {away}"
+                        print(msg)
+                        send_telegram(msg)
+                    else:
+                        print(f"Задержка {delay:.1f} сек — пропускаем (< {FILTER_DELAY} сек)")
+                    
+                    break  # завершаем мониторинг
+            
+            wh_old = wh_new
             time.sleep(2)
-            continue
-        if goal_time is None and wh_new < wh_old * 0.7:
-            goal_time = datetime.now()
-            send_telegram(f"⚽ ГОЛ в {home} - {away} в {goal_time.strftime('%H:%M:%S')}")
-        if goal_time is not None:
-            ls_new = get_ls_odds(ls_url)
-            if ls_new is None:
-                delay = (datetime.now() - goal_time).total_seconds()
-                send_telegram(f"🔒 Котировки ЛС закрылись через {delay:.1f} сек\n{home} - {away}")
-                break
-        wh_old = wh_new
-        time.sleep(2)
+            
+        except Exception as e:
+            print(f"Ошибка в monitor_match: {e}")
+            time.sleep(5)
 
+# ============ 6. ГЛАВНЫЙ ЦИКЛ ============
 def main():
-    send_telegram("🚀 Бот запущен")
+    send_telegram("🚀 Бот запущен. Ищем матчи...")
+    print("🚀 Бот запущен")
+    
     while True:
-        matches = get_live_matches()
-        if not matches:
-            time.sleep(10)
-            continue
-        for match in matches:
-            t = threading.Thread(target=monitor_match, args=(match,))
-            t.daemon = True
-            t.start()
-        time.sleep(3600)
+        try:
+            # Получаем матчи с WH
+            wh_matches = get_wh_matches()
+            if not wh_matches:
+                print("Нет матчей на WH, ждём...")
+                time.sleep(30)
+                continue
+            
+            # Получаем матчи с ЛС
+            ls_matches = get_ls_matches()
+            if not ls_matches:
+                print("Нет матчей на ЛС, ждём...")
+                time.sleep(30)
+                continue
+            
+            # Сопоставляем и запускаем мониторинг
+            matched = 0
+            for wh in wh_matches:
+                ls_url = match_found(wh, ls_matches)
+                if ls_url:
+                    matched += 1
+                    print(f"✅ Совпадение: {wh['home']} - {wh['away']}")
+                    t = threading.Thread(target=monitor_match, args=(wh, ls_url))
+                    t.daemon = True
+                    t.start()
+            
+            if matched == 0:
+                print("❌ Совпадений не найдено. Возможно, разные названия команд.")
+            
+            # Ждём перед повторным сканированием
+            time.sleep(300)  # 5 минут
+            
+        except Exception as e:
+            print(f"Ошибка в main: {e}")
+            time.sleep(30)
 
 if __name__ == "__main__":
     main()
